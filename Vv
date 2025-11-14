@@ -1,0 +1,106 @@
+<!-- public/index.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Host — Share Screen / Camera</title>
+  <style>
+    body { font-family: sans-serif; padding: 12px; }
+    video { width: 100%; max-height: 60vh; background: #000; }
+  </style>
+</head>
+<body>
+  <h1>Start a Support Session (Host)</h1>
+  <label>Room ID: <input id="roomId" value="room1"></label>
+  <button id="start">Start & Get Link</button>
+  <p id="link"></p>
+  <video id="local" autoplay playsinline muted></video>
+  <div>
+    <h3>Chat</h3>
+    <div id="chatbox" style="height:120px;overflow:auto;border:1px solid #ddd;padding:6px"></div>
+    <input id="msg"><button id="send">Send</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let pc;
+    let localStream;
+    const startBtn = document.getElementById('start');
+
+    startBtn.onclick = async () => {
+      const roomId = document.getElementById('roomId').value.trim();
+      if (!roomId) return alert('Enter room id');
+
+      // create peer connection
+      pc = new RTCPeerConnection();
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit('signal', { roomId, data: { type: 'candidate', candidate: e.candidate }});
+        }
+      };
+
+      // show tracks locally (host can also see own camera/screen)
+      pc.ontrack = (ev) => {
+        // not expecting remote tracks for host; helper usually won't send
+      };
+
+      // ask user to share screen or camera
+      try {
+        // prefer screen capture; fall back to camera if not available
+        localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      } catch(e) {
+        // fallback to camera
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      }
+
+      // attach to local video element
+      document.getElementById('local').srcObject = localStream;
+
+      // add tracks to peer connection
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      // create offer and set local description
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // join room and send offer via signaling
+      socket.emit('join-room', roomId);
+      socket.emit('signal', { roomId, data: { type: 'offer', sdp: offer.sdp }});
+
+      document.getElementById('link').innerText = `Share this room id with helper: ${roomId}`;
+    };
+
+    // handle incoming signaling from helper
+    socket.on('signal', async ({ from, data }) => {
+      const roomId = document.getElementById('roomId').value.trim();
+      if (!pc) return;
+      if (data.type === 'answer') {
+        await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+      } else if (data.type === 'candidate') {
+        try { await pc.addIceCandidate(data.candidate); } catch(e) { console.warn(e); }
+      }
+    });
+
+    // chat
+    const chatbox = document.getElementById('chatbox');
+    document.getElementById('send').onclick = () => {
+      const roomId = document.getElementById('roomId').value.trim();
+      const m = document.getElementById('msg').value;
+      socket.emit('chat', { roomId, message: m });
+      appendChat('Me', m);
+      document.getElementById('msg').value = '';
+    };
+    socket.on('chat', ({ from, message }) => {
+      appendChat('Peer', message);
+    });
+    function appendChat(who, text) {
+      const div = document.createElement('div');
+      div.innerText = who + ': ' + text;
+      chatbox.appendChild(div);
+      chatbox.scrollTop = chatbox.scrollHeight;
+    }
+  </script>
+</body>
+</html>
